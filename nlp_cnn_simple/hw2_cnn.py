@@ -161,21 +161,29 @@ def forward(word_indices):
     # First (hidden) layer
     n_in = len(word_indices)
     n_out = n_in - width + 1  #number of outputs after 1 convolution pass
+    #First, precompute 1-hot vectors
+    one_hot = np.zeros((n_out, width*vocabsize))
+    for l in range(n_out):
+        # Select the inputs coresponding to the current window position X[l..(l+width)]
+        # and generate a long vector of corresponding concatenated 1-hot vectors
+        x_vecs = np.zeros((width, vocabsize))
+        for k in range(width):
+            input_idx = l+k
+            word_idx = word_indices[input_idx]
+            x_vecs[k, word_idx] = 1  # k-th 1-hot vector
+        # Compute dot(x_vecs, U[:, j, :]) where the second argument is the j-th filter.
+        one_hot[l,:] = np.reshape(x_vecs, [1, width*vocabsize])
+
+    #Now, convolve with all filters, one by one.
     for j in range(F):   # for each filter
         h[j] = -1   # will hold max-pooling result for filter j
         hid[j] = 0
-        for l in range(n_out):  # compute each y_l in the output of the first layer
-            # Select the inputs coresponding to the current window position X[l..(l+width)]
-            # and generate a long vector of corresponding concatenated 1-hot vectors
-            x_vecs = np.zeros((width, vocabsize))
-            for k in range(width):
-                input_idx = l+k
-                word_idx = word_indices[input_idx]
-                x_vecs[k, word_idx] = 1  # k-th 1-hot vector
-            # Compute dot(x_vecs, U[:, j, :]) where the second argument is the j-th filter.
-            x_l = np.reshape(x_vecs, [1, width*vocabsize])
-            filter_j = np.reshape(U[:,j,:], [width*vocabsize, 1])
-            y_l = np.tanh(np.dot(x_l, filter_j))
+        filter_j = np.reshape(U[:,j,:], [width*vocabsize, 1])
+
+        # print("Convolving input with filter {}".format(j))
+
+        for l in range(n_out):  # Compute each y_l in the output of the first layer
+            y_l = np.tanh(np.dot(one_hot[l], filter_j))
             # Update max over outputs y_l, for filter j.
             if y_l > h[j]:
                 h[j] = max(h[j], y_l)
@@ -215,6 +223,13 @@ def backward(word_indices, true_label):
     """
     Type your code below
     """
+                    # TODO: replace both numerical gradients with analytical
+    delta_V = calc_numerical_gradients_V(V, word_indices, true_label)*alpha
+    delta_U = calc_numerical_gradients_U(V, word_indices, true_label)*alpha
+    # Add the delta becuase we are MAXIMIZING the objective function
+    V = V + delta_V
+    U[hid,:,:] = U[hid,:,:] + delta_U[hid,:,:] # update only the appropriate argmax term for U
+
 
 
 def calc_numerical_gradients_V(V, word_indices, true_label):
@@ -236,18 +251,26 @@ def calc_numerical_gradients_V(V, word_indices, true_label):
     Type your code below
     """
     # Compute numerical partial derivatives for each v_i in V, one at a time
-    for v_i, vgrad_i in np.nditer([V, V_grad], op_flags='readwrite'):
-        vi[...] = vi + eps  # add a positive delta
-        predicted_prob = forward(word_indices)
-        # loss_function = y * log(o) + (1 - y) * log(1 - o)
-        loss_1 =  true_label*log(predicted_prob) + (1-true_label)*log(1-predicted_prob)
-        vi[...] = vi - 2*eps  # add a negative delta
-        predicted_prob = forward(word_indices)
-        loss_2 =  true_label*log(predicted_prob) + (1-true_label)*log(1-predicted_prob)
+    sys.stdout.write("Computing numerical V-gradient")
+    for v_i, vgrad_i in np.nditer([V, V_grad], op_flags=['readwrite','readwrite']):
+        v_i[...] = v_i + eps  # Alter v_i by adding a positive delta
+        # Make a prediction and compute loss
+        predicted_prob = forward(word_indices)["prob"]
 
-        # TODO: Make sure this line actually writes into V_grad
-        vgrad_i[...] = (loss1 - loss_2) / (eps+eps)  # apllly finite differencing
-        vi[...] = vi + eps  # undo modification
+        # loss_function = y * log(o) + (1 - y) * log(1 - o)
+        loss_1 =  true_label*np.log(predicted_prob) + (1-true_label)*np.log(1-predicted_prob)
+        v_i[...] = v_i - 2*eps  # Alter v_i by adding a negative delta
+
+        # Make another prediction and compute loss
+        predicted_prob = forward(word_indices)["prob"]
+        loss_2 =  true_label*np.log(predicted_prob) + (1-true_label)*np.log(1-predicted_prob)
+
+        vgrad_i[...] = (loss_1 - loss_2) / (eps+eps)  # apply finite differencing
+        v_i[...] = v_i + eps  # undo modifications
+
+        sys.stdout.write('.') # Just to visualize progress
+        sys.stdout.flush()
+    print("done.")
     return V_grad
 
 
@@ -275,8 +298,34 @@ def calc_numerical_gradients_U(U, word_indices, true_label):
     """
     Type your code below
     """
+    sys.stdout.write("Computing numerical U-gradient")
+    # Compute numerical partial derivatives for each v_i in V, one at a time
+    # Work only on U[hid,:,:] - the slice of U corresponding to the argmax term
+    for u_ij, ugrad_ij in np.nditer([U[hid,:,:], U_grad], op_flags=['readwrite','readwrite']):
+        u_ij[...] = u_ij + eps  # Alter u_ij by adding a positive delta
+        # Make a prediction and compute loss
+        predicted_prob = forward(word_indices)["prob"]
+        # loss_function = y * log(o) + (1 - y) * log(1 - o)
+        loss_1 =  true_label*np.log(predicted_prob) + (1-true_label)*np.log(1-predicted_prob)
+        u_ij[...] = u_ij - 2*eps  # Alter u_ij by adding a negative delta
+        # Make another prediction and compute loss
+        predicted_prob = forward(word_indices)["prob"]
+        loss_2 =  true_label*np.log(predicted_prob) + (1-true_label)*np.log(1-predicted_prob)
 
+        # TODO: Make sure this line actually writes into V_grad
+        ugrad_ij[...] = (loss_1 - loss_2) / (eps+eps)  # apply finite differencing
+        u_ij[...] = u_ij + eps  # undo modifications
+
+        sys.stdout.write('.') # Just to visualize progress
+        sys.stdout.flush()
+    print("done.")
     return U_grad
+
+
+def calc_analytical_gradients_V(V, word_indices, h, true_label):
+    # grad_V = y*(1-sigmoid(V*h))*h
+    ana_grad_V = true_label*(1 - sigmoid(np.dot(V, h)))*h
+    return ana_grad_V
 
 
 def check_gradient():
@@ -301,22 +350,26 @@ def check_gradient():
     Update 0s below with your calculations
     """
     # check V
-    # compute analytical and numerical gradients and compare their differences
-    ana_grad_V =    0 # <-- Update
-    numerical_grad_V = 0 # <-- Update
+    # compute analytical gradient
+    ana_grad_V = calc_analytical_gradients_V(V, x, h, y)
+
+    # compute numerical gradient
+    numerical_grad_V = calc_numerical_gradients_V(V, x, y)
+    # compare the differences
     sum_V_diff = sum((numerical_grad_V - ana_grad_V) ** 2)
 
     # check U
+    sum_U_diff = 0
     # compute analytical and numerical gradients and compare their differences
-    ana_grad_U = 0 # <-- Update
-    numerical_grad_U = 0 # <-- Update
-    sum_U_diff = sum(sum((numerical_grad_U - ana_grad_U) ** 2))
+    # ana_grad_U = 0 # <-- Update
+    # numerical_grad_U = 0 # <-- Update
+    # sum_U_diff = sum(sum((numerical_grad_U - ana_grad_U) ** 2))
 
     print("V diff: {:.8f}, U diff: {:.8f} (these should be close to 0)"
           .format(sum_V_diff, sum_U_diff))
 
 
-# TODO: temp code for testing 
+# TODO: temp code for testing
 def preload_vocab_to_pickle(pickle_file_name):
     vocabFile = sys.argv[2]
     read_vocab(vocabFile)
