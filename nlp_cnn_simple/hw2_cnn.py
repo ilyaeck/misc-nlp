@@ -224,13 +224,16 @@ def backward(word_indices, true_label):
     Type your code below
     """
                     # TODO: replace both numerical gradients with analytical
+    delta_U = calc_numerical_gradients_U(U, word_indices, true_label)*alpha
     delta_V = calc_numerical_gradients_V(V, word_indices, true_label)*alpha
-    delta_U = calc_numerical_gradients_U(V, word_indices, true_label)*alpha
     # Add the delta becuase we are MAXIMIZING the objective function
     V = V + delta_V
-    U[hid,:,:] = U[hid,:,:] + delta_U[hid,:,:] # update only the appropriate argmax term for U
-
-
+    # For U, update only the appropriate argmax term:
+    for j_filter in range(F):
+        i = hid[j_filter]
+        for k in range(width):
+            U[i,j_filter,k] = delta_U[j_filter,k]
+    return
 
 def calc_numerical_gradients_V(V, word_indices, true_label):
     """
@@ -300,24 +303,26 @@ def calc_numerical_gradients_U(U, word_indices, true_label):
     """
     sys.stdout.write("Computing numerical U-gradient")
     # Compute numerical partial derivatives for each v_i in V, one at a time
-    # Work only on U[hid,:,:] - the slice of U corresponding to the argmax term
-    for u_ij, ugrad_ij in np.nditer([U[hid,:,:], U_grad], op_flags=['readwrite','readwrite']):
-        u_ij[...] = u_ij + eps  # Alter u_ij by adding a positive delta
-        # Make a prediction and compute loss
-        predicted_prob = forward(word_indices)["prob"]
-        # loss_function = y * log(o) + (1 - y) * log(1 - o)
-        loss_1 =  true_label*np.log(predicted_prob) + (1-true_label)*np.log(1-predicted_prob)
-        u_ij[...] = u_ij - 2*eps  # Alter u_ij by adding a negative delta
-        # Make another prediction and compute loss
-        predicted_prob = forward(word_indices)["prob"]
-        loss_2 =  true_label*np.log(predicted_prob) + (1-true_label)*np.log(1-predicted_prob)
+    for j_filter in range(F):
+        i = hid[j_filter]   # Focus only on indices [hid,j_filter,:] of U - corresponding to the argmax term
+        for k in range(width):  # Alter u_ij by adding a positive delta
+            U[i, j_filter, k] += eps
+            # Make a prediction and compute loss
+            predicted_prob = forward(word_indices)["prob"]
+            # loss_function = y * log(o) + (1 - y) * log(1 - o)
+            loss_1 =  true_label*np.log(predicted_prob) + (1-true_label)*np.log(1-predicted_prob)
+            U[i, j_filter, k] -= 2* eps  # Alter u_ij by adding a negative delta
 
-        # TODO: Make sure this line actually writes into V_grad
-        ugrad_ij[...] = (loss_1 - loss_2) / (eps+eps)  # apply finite differencing
-        u_ij[...] = u_ij + eps  # undo modifications
+            # Make another prediction and compute loss
+            predicted_prob = forward(word_indices)["prob"]
+            loss_2 =  true_label*np.log(predicted_prob) + (1-true_label)*np.log(1-predicted_prob)
 
-        sys.stdout.write('.') # Just to visualize progress
-        sys.stdout.flush()
+            # Finally, compute grad and undo modifications to U
+            U_grad[j_filter, k] = (loss_1 - loss_2) / (eps+eps)  # apply finite differencing
+            U[i, j_filter, k] += eps
+
+            sys.stdout.write('.') # Just to visualize progress
+            sys.stdout.flush()
     print("done.")
     return U_grad
 
@@ -352,7 +357,6 @@ def check_gradient():
     # check V
     # compute analytical gradient
     ana_grad_V = calc_analytical_gradients_V(V, x, h, y)
-
     # compute numerical gradient
     numerical_grad_V = calc_numerical_gradients_V(V, x, y)
     # compare the differences
@@ -425,7 +429,10 @@ def load_backward_vars():
 #
 if __name__ == "__main__":
     if sys.argv[1] == "-t":
-        check_gradient()
+
+##### TODO: restore now!!
+        # check_gradient()
+
         train()
     elif sys.argv[1] == "-g":
         U, word_indices, true_label = load_gradient_vars()
