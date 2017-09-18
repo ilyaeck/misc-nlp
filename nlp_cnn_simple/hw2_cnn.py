@@ -429,10 +429,7 @@ def load_backward_vars():
 #
 if __name__ == "__main__":
     if sys.argv[1] == "-t":
-
-##### TODO: restore now!!
-        # check_gradient()
-
+        check_gradient()
         train()
     elif sys.argv[1] == "-g":
         U, word_indices, true_label = load_gradient_vars()
