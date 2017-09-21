@@ -103,7 +103,7 @@ def train():
         # confusion matrix showing the accuracy of the algorithm
         confusion_training = np.zeros((2, 2))
         confusion_validation = np.zeros((2, 2))
-
+        sys.stdout.write('Training epoch with full data batch')
         for (data, label) in training_data:
             # back propagation to update weights for both U and V
             backward(data, label)
@@ -112,6 +112,8 @@ def train():
             prob = forward(data)["prob"]
             pred = 1 if prob > .5 else 0
             confusion_training[pred, label] += 1
+            sys.stdout.write('.')  # Vizualize progress
+            sys.stdout.flush()
 
         for (data, label) in test_data:
             # calculate forward and evaluate
@@ -161,18 +163,14 @@ def forward(word_indices):
     # First (hidden) layer
     n_in = len(word_indices)
     n_out = n_in - width + 1  #number of outputs after 1 convolution pass
-    #First, precompute 1-hot vectors
-    one_hot = np.zeros((n_out, width*vocabsize))
-    for l in range(n_out):
-        # Select the inputs coresponding to the current window position X[l..(l+width)]
-        # and generate a long vector of corresponding concatenated 1-hot vectors
-        x_vecs = np.zeros((width, vocabsize))
+    #First, precompute actual inputs of U filters
+    input_chunks = np.zeros((n_out, width), dtype=int)
+    for i in range(n_out):
+        # Select the inputs coresponding to the current window position X[i..(i+width-1)]
+        # and precompute chunks of conatenated inputs for each filter window position.
         for k in range(width):
-            input_idx = l+k
-            word_idx = word_indices[input_idx]
-            x_vecs[k, word_idx] = 1  # k-th 1-hot vector
-        # Compute dot(x_vecs, U[:, j, :]) where the second argument is the j-th filter.
-        one_hot[l,:] = np.reshape(x_vecs, [1, width*vocabsize])
+            # Optimization: store only vocab indices of words, as opposed to 1-hot vectors.
+            input_chunks[i,k] = word_indices[i+k]
 
     #Now, convolve with all filters, one by one.
     for j in range(F):   # for each filter
@@ -182,12 +180,12 @@ def forward(word_indices):
 
         # print("Convolving input with filter {}".format(j))
 
-        for l in range(n_out):  # Compute each y_l in the output of the first layer
-            y_l = np.tanh(np.dot(one_hot[l], filter_j))
+        for i in range(n_out):  # Compute each y_i in the output of the first layer
+            y_i = np.tanh(x_dot_u(input_chunks[i,:], j))
             # Update max over outputs y_l, for filter j.
-            if y_l > h[j]:
-                h[j] = max(h[j], y_l)
-                hid[j] = l
+            if y_i > h[j]:
+                h[j] = max(h[j], y_i)
+                hid[j] = i
 
     # step 2. compute probability
     # once h and hid are computed, compute the probabiliy by sigmoid(h^T*V)
@@ -223,19 +221,21 @@ def backward(word_indices, true_label):
     """
     Type your code below
     """
-                    # TODO: replace both numerical gradients with analytical
-    delta_U = calc_numerical_gradients_U(U, word_indices, true_label)*alpha
-    delta_V = calc_numerical_gradients_V(V, word_indices, true_label)*alpha
+    delta_U = calc_analytical_gradients_U(U, word_indices, h, hid, true_label)*alpha
+    delta_V = calc_analytical_gradients_V(V, word_indices, h, true_label)*alpha
     # Add the delta becuase we are MAXIMIZING the objective function
     V = V + delta_V
-    # For U, update only the appropriate argmax term:
+    # For U, given the argmax index i, update only the slices of U corresponding to
+    # [word_indices[i],..,word_indices[i+k-1]]
     for j_filter in range(F):
         i = hid[j_filter]
         for k in range(width):
-            U[i,j_filter,k] = delta_U[j_filter,k]
+            slice_idx = word_indices[i+k]
+            U[slice_idx, j_filter, k] = delta_U[j_filter, k]
     return
 
-def calc_numerical_gradients_V(V, word_indices, true_label):
+
+def calc_numerical_gradients_V(V_obsolete, word_indices, true_label):
     """
     :param true_label: true label of the data
     :param V: weight vector of V
@@ -277,7 +277,7 @@ def calc_numerical_gradients_V(V, word_indices, true_label):
     return V_grad
 
 
-def calc_numerical_gradients_U(U, word_indices, true_label):
+def calc_numerical_gradients_U(U_obsolete, word_indices, true_label):
     """
     :param U: weight matrix of U
     :param word_indices: a list of word indices, i.e. idx = vocab[word]
@@ -304,14 +304,17 @@ def calc_numerical_gradients_U(U, word_indices, true_label):
     sys.stdout.write("Computing numerical U-gradient")
     # Compute numerical partial derivatives for each v_i in V, one at a time
     for j_filter in range(F):
-        i = hid[j_filter]   # Focus only on indices [hid,j_filter,:] of U - corresponding to the argmax term
+        # Given the argmax index i, update only the slices of U corresponding to
+        # [word_indices[i],..,word_indices[i+k-1]]
+        i = hid[j_filter]
         for k in range(width):  # Alter u_ij by adding a positive delta
-            U[i, j_filter, k] += eps
+            slice_idx = word_indices[i+k]
+            U[slice_idx, j_filter, k] += eps
             # Make a prediction and compute loss
             predicted_prob = forward(word_indices)["prob"]
             # loss_function = y * log(o) + (1 - y) * log(1 - o)
             loss_1 =  true_label*np.log(predicted_prob) + (1-true_label)*np.log(1-predicted_prob)
-            U[i, j_filter, k] -= 2* eps  # Alter u_ij by adding a negative delta
+            U[slice_idx, j_filter, k] -= 2* eps  # Alter u_ij by adding a negative delta
 
             # Make another prediction and compute loss
             predicted_prob = forward(word_indices)["prob"]
@@ -319,18 +322,52 @@ def calc_numerical_gradients_U(U, word_indices, true_label):
 
             # Finally, compute grad and undo modifications to U
             U_grad[j_filter, k] = (loss_1 - loss_2) / (eps+eps)  # apply finite differencing
-            U[i, j_filter, k] += eps
+            U[slice_idx, j_filter, k] += eps
 
             sys.stdout.write('.') # Just to visualize progress
             sys.stdout.flush()
     print("done.")
     return U_grad
 
+# Compute dot product between a chunk of conctenated input words vectors x_i
+# and filter u_j
+def x_dot_u(input_chunk_word_idxs, u_idx):
+    """
+    :param input_chunk_word_idxs: vocab indices of words in this input chunk
+    :param u_idx: filter index
+    """
+    # Dot product with one-hot vectors is tantamount to selecting a slice of U
+    # correponding to a given word vocab index, so we optiize the operation.
+    dotprod = 0
+    for k,word_idx in enumerate(input_chunk_word_idxs):
+        dotprod += U[word_idx,u_idx,k]
+    return dotprod
 
-def calc_analytical_gradients_V(V, word_indices, h, true_label):
-    # grad_V = y*(1-sigmoid(V*h))*h
-    ana_grad_V = true_label*(1 - sigmoid(np.dot(V, h)))*h
-    return ana_grad_V
+
+def calc_analytical_gradients_V(V_obsolete, word_indices, h, true_label):
+    """
+    grad_V = (y-sigmoid(V*h))*h
+    """
+    grad_V = (true_label - sigmoid(np.dot(V, h)))*h
+    return grad_V
+
+def calc_analytical_gradients_U(U_obsolete, word_indices, h, hid, true_label):
+    """
+    dL/du_j = [true_label - sigmoid(V*h)] * V * [1 - tanh^2(dot(x_m,u_j))] * {x_m}^T
+        where x_m is the maxpooling "winner" for u_j.
+    In practice, we do not multiply
+    """
+    common_coeff = true_label - sigmoid(np.dot(V, h))
+    U_grad = np.zeros((F, width))
+    argmax_input_chunks = np.zeros(width, dtype=int)
+    for j_filter in range(F):
+        i_argmax = hid[j_filter]
+        for k in range(width): # Collect "argmax" word indices for this filter
+            argmax_input_chunks[k] = word_indices[i_argmax+k]
+        tanh_val = np.tanh(x_dot_u(argmax_input_chunks, j_filter)) ## This is te term that depends on U.
+        coeff = common_coeff*V[j_filter]*(1-tanh_val*tanh_val)
+        U_grad[j_filter,:] = coeff # All kernel coefficients are same??
+    return U_grad
 
 
 def check_gradient():
@@ -363,27 +400,14 @@ def check_gradient():
     sum_V_diff = sum((numerical_grad_V - ana_grad_V) ** 2)
 
     # check U
-    sum_U_diff = 0
     # compute analytical and numerical gradients and compare their differences
-    # ana_grad_U = 0 # <-- Update
-    # numerical_grad_U = 0 # <-- Update
-    # sum_U_diff = sum(sum((numerical_grad_U - ana_grad_U) ** 2))
+    ana_grad_U = calc_analytical_gradients_U(U, x, h, hid, y)
+    numerical_grad_U = calc_numerical_gradients_U(U, x, y)
+    sum_U_diff = sum(sum((numerical_grad_U - ana_grad_U) ** 2))
 
     print("V diff: {:.8f}, U diff: {:.8f} (these should be close to 0)"
           .format(sum_V_diff, sum_U_diff))
 
-
-# TODO: temp code for testing
-def preload_vocab_to_pickle(pickle_file_name):
-    vocabFile = sys.argv[2]
-    read_vocab(vocabFile)
-    # class AllData:
-    # data = AllData()
-    # data.word_indices =
-    # with open('grad.pickle', 'wb') as f:
-    #     # The protocol version used is detected automatically, so we do not
-    #     # have to specify it.
-    #     pickle.dump(data, f)
 
 
 #################################################
@@ -440,9 +464,5 @@ if __name__ == "__main__":
     elif sys.argv[1] == "-b":
         word_indices, true_label = load_backward_vars()
         backward(word_indices, true_label)
-######## temp code, remove #######
-    elif sys.argv[1] == "-p":
-        preload_vocab_to_pickle("grad.pickle")
-######## end of temp code to remove #######
     else:
         print("Usage: python hw2_cnn.py -t vocab.txt movie_reviews.train movie_reviews.dev")
