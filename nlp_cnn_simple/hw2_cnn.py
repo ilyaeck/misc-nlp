@@ -366,7 +366,8 @@ def calc_analytical_gradients_U(U_obsolete, word_indices, h, hid, true_label):
             argmax_input_chunks[k] = word_indices[i_argmax+k]
         tanh_val = np.tanh(x_dot_u(argmax_input_chunks, j_filter)) ## This is te term that depends on U.
         coeff = common_coeff*V[j_filter]*(1-tanh_val*tanh_val)
-        U_grad[j_filter,:] = coeff # All kernel coefficients are same??
+        U_grad[j_filter,:] = coeff # For given filter, all[1..width] coefficients are same: basically, each filter just selects 
+                                   # a single representative n-gram
     return U_grad
 
 
